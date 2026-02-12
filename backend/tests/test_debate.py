@@ -92,8 +92,11 @@ class TestDebate(unittest.TestCase):
         # Run
         events = list(d.run_generator())
 
+        moderator = d.moderator
+        assert moderator is not None
+
         has_mod_intervention = any(
-            e["type"] == "intervention" and e.get("participant") == d.moderator.name
+            e["type"] == "intervention" and e.get("participant") == moderator.name
             for e in events
         )
         self.assertTrue(has_mod_intervention)
