@@ -31,8 +31,6 @@ class TestDebate(unittest.TestCase):
         self.mock_completion_debate = patch(
             "debates.models.participant.completion"
         ).start()
-        self.mock_completion_mod = patch("debates.models.moderator.completion").start()
-
         # Setup mock response
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
@@ -43,7 +41,6 @@ class TestDebate(unittest.TestCase):
 
         self.mock_completion_base.return_value = mock_response
         self.mock_completion_debate.return_value = mock_response
-        self.mock_completion_mod.return_value = mock_response
 
         # Store mocks for assertion if needed
         self.mock_response = mock_response
