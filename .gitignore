@@ -1,5 +1,9 @@
+
 .env
 *.txt
 *.log
 debate_logs/*
 debate_results/*
+debate_configurations/*
+__pycache__/
+.agent/
