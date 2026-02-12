@@ -51,13 +51,13 @@ repos:
     rev: 1.9.2
     hooks:
       - id: bandit
-        exclude: ^src/tests/|.*/factories/.*
+        exclude: ^backend/tests/.*|.*/tests/.*
         args: ["--skip", "B311"]
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.1
     hooks:
       - id: codespell
-        exclude: ^src/locale/.*\.po$|^src/apps/ideology/fixtures/.*.json$
+        exclude: ^src/locale/.*\.po$|^src/apps/ideology/fixtures/.*.json$|.*lock.*
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.0
     hooks:

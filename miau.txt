@@ -1,0 +1,2656 @@
+Structure:
+.
+├── .
+├── debate_configurations
+├── debate_logs
+├── debate_results
+├── debates
+│   ├── base.py
+│   ├── enums
+│   │   ├── attitude_type.py
+│   │   ├── brain_type.py
+│   │   ├── ethnicity_type.py
+│   │   ├── gender_type.py
+│   │   ├── __init__.py
+│   │   ├── mindset_type.py
+│   │   ├── moderator_action.py
+│   │   └── role_type.py
+│   ├── __init__.py
+│   ├── logger.py
+│   └── models
+│       ├── debater.py
+│       ├── __init__.py
+│       ├── intervention.py
+│       ├── moderator.py
+│       ├── participant.py
+│       ├── position_change_check.py
+│       └── results.py
+├── .env-dist
+├── main.py
+├── .pre-commit-config.yaml
+└── pyproject.toml
+
+4 directories, 26 files
+
+Where files are:
+./pyproject.toml:
+```
+[project]
+name = "debaite"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.14"
+dependencies = [
+    "faker>=40.4.0",
+    "ipython>=9.10.0",
+    "pydantic>=2.12.5",
+    "openai>=1.0.0",
+    "anthropic>=0.3.0",
+    "google-generativeai>=0.3.0",
+    "python-dotenv>=1.2.1",
+    "litellm>=1.0.0",
+]
+```
+
+./.env-dist:
+```
+MIN_PARTICIPANTS=2
+MAX_PARTICIPANTS=5
+MIN_TOTAL_TURNS=5
+MAX_TOTAL_TURNS=20
+MIN_TOTAL_ROUNDS=1
+MAX_TOTAL_ROUNDS=5
+MIN_MAX_LETTERS_PER_PARTICIPANT_PER_TURN=1000
+MAX_MAX_LETTERS_PER_PARTICIPANT_PER_TURN=10000
+DEBATE_REPETITIONS=1
+LANGUAGE=English
+
+# Rules
+MAX_STRIKES_FOR_VETO=3
+
+# AI Configuration
+AVAILABLE_BRAINS=all
+
+# Confidence & Personality
+CONFIDENCE_FLIP_THRESHOLD=0.5
+CONFIDENCE_AFTER_FLIP=0.55
+OPEN_MINDED_IMPACT_MULTIPLIER=1.2
+CLOSE_MINDED_IMPACT_MULTIPLIER=0.8
+
+# Memory
+MEMORY_COMPRESSION_TURNS=10
+
+# API Keys
+GEMINI_API_KEY=CHANGE-ME
+GEMINI_MODEL=CHANGE-ME
+OPENAI_API_KEY=CHANGE-ME
+OPENAI_MODEL=CHANGE-ME
+DEEPSEEK_API_KEY=CHANGE-ME
+DEEPSEEK_MODEL=CHANGE-ME
+ANTHROPIC_API_KEY=CHANGE-ME
+ANTHROPIC_MODEL=CHANGE-ME
+
+# --- GLOBAL OVERRIDES (Leave empty for random) ---
+# Values: illiterate, scholar, expert, general_knowledge
+PARTICIPANT_ROLE=
+MODERATOR_ROLE=
+
+# Values: strict, flexible, open_minded, calm, aggressive
+PARTICIPANT_ATTITUDE=
+MODERATOR_ATTITUDE=
+
+# Values: open_minded, neutral, close_minded
+PARTICIPANT_MINDSET=
+MODERATOR_MINDSET=
+
+# Values: openai, gemini, anthropic, deepseek
+PARTICIPANT_BRAIN=
+MODERATOR_BRAIN=
+
+# Values: male, female, non_binary
+PARTICIPANT_GENDER=
+MODERATOR_GENDER=
+
+# Booleans (true/false)
+PARTICIPANT_TOLERANT=
+MODERATOR_TOLERANT=
+
+PARTICIPANT_INSULTS=
+MODERATOR_INSULTS=
+
+PARTICIPANT_LIES=
+MODERATOR_LIES=
+```
+
+./.pre-commit-config.yaml:
+```
+repos:
+  - repo: https://github.com/pycqa/isort
+    rev: 7.0.0
+    hooks:
+      - id: isort
+        args: ["--profile", "black"]
+        exclude: '(^|/)(__init__\.py)$'
+
+  - repo: https://github.com/psf/black
+    rev: 25.12.0
+    hooks:
+      - id: black
+
+  - repo: https://github.com/charliermarsh/ruff-pre-commit
+    rev: 'v0.14.10'
+    hooks:
+      - id: ruff
+        args: [ --exit-non-zero-on-fix ]
+        exclude: '(^|.*/)__init__\.py$'
+
+  - repo: https://github.com/asottile/pyupgrade
+    rev: v3.21.2
+    hooks:
+      - id: pyupgrade
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-merge-conflict
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.19.1
+    hooks:
+    - id: mypy
+      args:
+        - --check-untyped-defs
+        - --ignore-missing-imports
+      additional_dependencies:
+        - types-requests
+        - types-pytz
+  - repo: https://github.com/pre-commit/pygrep-hooks
+    rev: v1.10.0
+    hooks:
+      - id: python-use-type-annotations
+      - id: python-no-eval
+      - id: python-no-log-warn
+      - id: text-unicode-replacement-char
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.9.2
+    hooks:
+      - id: bandit
+        exclude: ^src/tests/|.*/factories/.*
+        args: ["--skip", "B311"]
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.1
+    hooks:
+      - id: codespell
+        exclude: ^src/locale/.*\.po$|^src/apps/ideology/fixtures/.*.json$
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks
+```
+
+./main.py:
+```
+import argparse
+import json
+import os
+import sys
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from dotenv import load_dotenv
+
+from debates.base import Debate
+from debates.logger import logger
+from debates.models.results import (
+    FinalSummaryResult,
+    HighlightTurn,
+    PositionChangeEntry,
+    PositionStat,
+    ScoreStat,
+    SessionSummary,
+    WinnerDetail,
+)
+
+load_dotenv()
+
+
+class DebateBatchSummarizer:
+    def __init__(self, result_paths: List[Path]):
+        self.result_paths = result_paths
+
+        self.total_cost = 0.0
+        self.total_participants = 0
+        self.total_rounds = 0
+        self.global_scores = []
+        self.mod_stats_acc = {
+            "total_interventions": 0,
+            "total_sanctions": 0,
+            "total_skips": 0,
+            "total_vetos": 0,
+            "total_stops": 0,
+            "total_limits": 0,
+        }
+
+        self.winners_by_pos = []
+        self.winners_details = []
+        self.all_position_changes = []
+        self.highlight_turns = []
+
+        self.pos_stats_raw = {}
+        self.scores_by_pos_raw = {}
+
+        self.session_folder: Optional[Path] = None
+
+    def generate_report(self) -> None:
+        logger.info("=== STARTING GLOBAL SUMMARY ANALYSIS ===")
+
+        if not self.result_paths:
+            logger.warning("No result paths provided.")
+            return
+
+        self.session_folder = self.result_paths[0].parent
+
+        for path in self.result_paths:
+            self._process_single_file(path)
+
+        self._save_summary_json()
+
+    def _process_single_file(self, path: Path) -> None:
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            logger.error(f"Error reading {path}: {e}")
+            return
+
+        meta = data.get("metadata", {})
+        self.total_cost += meta.get("total_estimated_cost_usd", 0.0)
+        self.total_rounds += meta.get("total_rounds_configured", 0)
+
+        parts = data.get("participants", [])
+        self.total_participants += len(parts)
+
+        parts_map = {p["name"]: p for p in parts}
+
+        m_stats = data.get("moderator_stats", {})
+        self.mod_stats_acc["total_interventions"] += m_stats.get("interventions", 0)
+        self.mod_stats_acc["total_sanctions"] += m_stats.get("sanctions", 0)
+        self.mod_stats_acc["total_skips"] += m_stats.get("skips", 0)
+        self.mod_stats_acc["total_vetos"] += m_stats.get("vetos", 0)
+        self.mod_stats_acc["total_stops"] += m_stats.get("stops", 0)
+        self.mod_stats_acc["total_limits"] += m_stats.get("limits", 0)
+
+        changes = data.get("position_changes", [])
+        for c in changes:
+            c["debate_id"] = meta.get("id")
+            self.all_position_changes.append(PositionChangeEntry(**c))
+
+        eval_sec = data.get("evaluation", {})
+        outcome = eval_sec.get("global_outcome")
+
+        if outcome:
+            win_name = outcome.get("winner_name")
+            win_pos = outcome.get("winner_position")
+            self.winners_by_pos.append(win_pos)
+            self.winners_details.append(
+                WinnerDetail(
+                    debate_id=meta.get("id"),
+                    winner_name=win_name,
+                    winner_position=win_pos,
+                )
+            )
+
+            avg_scores_map = outcome.get("average_scores", {})
+            self.global_scores.extend(avg_scores_map.values())
+
+            for p_name, p_score in avg_scores_map.items():
+                p_data = parts_map.get(p_name)
+                if p_data:
+                    pos = (
+                        p_data.get("final_position")
+                        or p_data.get("original_position")
+                        or "Unknown"
+                    )
+                    if pos not in self.scores_by_pos_raw:
+                        self.scores_by_pos_raw[pos] = []
+                    self.scores_by_pos_raw[pos].append(p_score)
+
+            if outcome.get("best_intervention"):
+                bi = outcome["best_intervention"]
+                p_name = bi.get("participant", "Unknown")
+                p_data = parts_map.get(p_name)
+                p_conf = p_data.get("final_confidence", 0.0) if p_data else 0.0
+                p_pos = (
+                    p_data.get("final_position") or p_data.get("original_position")
+                    if p_data
+                    else "Unknown"
+                )
+
+                self.highlight_turns.append(
+                    HighlightTurn(
+                        debate_id=meta.get("id"),
+                        type="BEST",
+                        text=bi["text"][:300] + "...",
+                        participant_name=p_name,
+                        participant_position=p_pos,
+                        participant_confidence=p_conf,
+                    )
+                )
+
+            if outcome.get("worst_intervention"):
+                wi = outcome["worst_intervention"]
+                p_name = wi.get("participant", "Unknown")
+                p_data = parts_map.get(p_name)
+                p_conf = p_data.get("final_confidence", 0.0) if p_data else 0.0
+                p_pos = (
+                    p_data.get("final_position") or p_data.get("original_position")
+                    if p_data
+                    else "Unknown"
+                )
+
+                self.highlight_turns.append(
+                    HighlightTurn(
+                        debate_id=meta.get("id"),
+                        type="WORST",
+                        text=wi["text"][:300] + "...",
+                        participant_name=p_name,
+                        participant_position=p_pos,
+                        participant_confidence=p_conf,
+                    )
+                )
+
+        for p in parts:
+            pos = p.get("original_position", "Unknown")
+            if pos not in self.pos_stats_raw:
+                self.pos_stats_raw[pos] = {"initial": [], "final": []}
+
+            conf_hist = p.get("confidence_history", [1.0])
+            self.pos_stats_raw[pos]["initial"].append(conf_hist[0])
+            self.pos_stats_raw[pos]["final"].append(p.get("final_confidence", 1.0))
+
+    def _save_summary_json(self):
+        if not self.session_folder:
+            return
+
+        avg_score = (
+            sum(self.global_scores) / len(self.global_scores)
+            if self.global_scores
+            else 0.0
+        )
+
+        pos_dist = {}
+        total_p = sum(len(v["initial"]) for v in self.pos_stats_raw.values())
+
+        for pos, val in self.pos_stats_raw.items():
+            count = len(val["initial"])
+            perc = (count / total_p) * 100 if total_p > 0 else 0
+            pos_dist[pos] = PositionStat(
+                count=count,
+                mean_initial_confidence=sum(val["initial"]) / count if count else 0,
+                mean_final_confidence=sum(val["final"]) / count if count else 0,
+                percentage=round(perc, 2),
+            )
+
+        mean_scores_data = {}
+        for pos, scores in self.scores_by_pos_raw.items():
+            if scores:
+                mean_scores_data[pos] = ScoreStat(
+                    mean=round(sum(scores) / len(scores), 2),
+                    max=max(scores),
+                    min=min(scores),
+                    count=len(scores),
+                )
+
+        summary = FinalSummaryResult(
+            session_summary=SessionSummary(
+                total_debates=len(self.result_paths),
+                total_cost_usd=self.total_cost,
+                total_rounds=self.total_rounds,
+                total_participants=self.total_participants,
+                global_avg_score=round(avg_score, 2),
+                date_generated=datetime.now().isoformat(),
+            ),
+            moderator_summary=self.mod_stats_acc,
+            winners_by_position=dict(Counter(self.winners_by_pos)),
+            winners_details=self.winners_details,
+            position_changes=self.all_position_changes,
+            final_position_distribution=pos_dist,
+            mean_scores=mean_scores_data,
+            highlight_turns=self.highlight_turns,
+        )
+
+        logger.info("==========================================")
+        logger.info("          GLOBAL DEBATE SUMMARY           ")
+        logger.info("==========================================")
+
+        s = summary.session_summary
+        logger.info(f"Total Debates Run: {s.total_debates}")
+        logger.info(f"Total Cost:        ${s.total_cost_usd:.4f}")
+        logger.info(f"Total Participants:{s.total_participants}")
+        logger.info(f"Global Avg Score:  {s.global_avg_score:.2f}")
+
+        logger.info("\n--- MODERATOR ACTIVITY ---")
+        m = summary.moderator_summary
+        logger.info(f"Interventions: {m.get('total_interventions', 0)}")
+        logger.info(f"Sanctions:     {m.get('total_sanctions', 0)}")
+        logger.info(f"Vetos:         {m.get('total_vetos', 0)}")
+        logger.info(f"Stops:         {m.get('total_stops', 0)}")
+        logger.info(f"Limits:        {m.get('total_limits', 0)}")
+        logger.info(f"Skips:         {m.get('total_skips', 0)}")
+
+        logger.info("\n--- WINNERS BY POSITION ---")
+        if summary.winners_by_position:
+            sorted_w = sorted(
+                summary.winners_by_position.items(), key=lambda x: x[1], reverse=True
+            )
+            for pos, count in sorted_w:
+                logger.info(f"   - {pos}: {count} wins")
+        else:
+            logger.info("   (No winners declared)")
+
+        logger.info("\n--- SCORES BY POSITION ---")
+        sorted_scores = sorted(
+            mean_scores_data.items(), key=lambda x: x[1].mean, reverse=True
+        )
+        for pos, stat in sorted_scores:
+            logger.info(
+                f"   - {pos}: Avg: {stat.mean} | Max: {stat.max} | Min: {stat.min}"
+            )
+
+        logger.info("\n--- POSITION CHANGES ---")
+        changes = summary.position_changes
+        logger.info(f"Total swaps: {len(changes)}")
+        for i, change in enumerate(changes[:10]):
+            logger.info(
+                f"   - {change.name}: '{change.from_position}' -> '{change.to_position}' (Round {change.round_when_changed})"
+            )
+        if len(changes) > 10:
+            logger.info(f"   ... and {len(changes) - 10} more.")
+
+        logger.info("\n--- FINAL POSITION DISTRIBUTION ---")
+        d = summary.final_position_distribution
+        sorted_d = sorted(d.items(), key=lambda x: x[1].count, reverse=True)
+        for pos, stat in sorted_d:
+            logger.info(f"   - {pos}: {stat.count} participants ({stat.percentage}%)")
+
+        logger.info("==========================================")
+
+        path = self.session_folder / "final_summary.json"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(summary.model_dump_json(indent=4, by_alias=True))
+
+        logger.info(f"Global summary saved to: {path}")
+
+
+# --- Main Execution Helpers ---
+
+
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Debate Simulation Runner")
+    parser.add_argument("config_file", type=Path, help="Path to JSON config")
+    parser.add_argument("--repetitions", type=int, help="Override repetitions")
+    parser.add_argument(
+        "--parallel", action="store_true", help="Enable parallel execution"
+    )
+    parser.add_argument(
+        "--max-turn-letters",
+        type=int,
+        help="Override max letters per turn (fixed value)",
+    )
+
+    cpu_count = os.cpu_count() or 1
+    default_workers = max(1, cpu_count // 2)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=default_workers,
+        help=f"Worker threads (default: {default_workers} based on {cpu_count} cores)",
+    )
+
+    # Overrides
+    parser.add_argument("--part-role", type=str, help="Force role for all participants")
+    parser.add_argument(
+        "--part-brain", type=str, help="Force brain for all participants"
+    )
+    parser.add_argument(
+        "--part-attitude", type=str, help="Force attitude for all participants"
+    )
+    parser.add_argument(
+        "--part-mindset", type=str, help="Force mindset for all participants"
+    )
+    parser.add_argument(
+        "--part-insults",
+        type=str,
+        help="Allow insults for all participants (true/false)",
+    )
+    parser.add_argument(
+        "--part-lies", type=str, help="Allow lies for all participants (true/false)"
+    )
+
+    parser.add_argument("--mod-role", type=str, help="Force role for moderator")
+    parser.add_argument("--mod-brain", type=str, help="Force brain for moderator")
+    parser.add_argument("--mod-mindset", type=str, help="Force mindset for moderator")
+    parser.add_argument(
+        "--mod-insults", type=str, help="Allow insults for moderator (true/false)"
+    )
+    parser.add_argument(
+        "--mod-lies", type=str, help="Allow lies for moderator (true/false)"
+    )
+
+    return parser.parse_args()
+
+
+def _configure_environment(args: argparse.Namespace) -> None:
+    pass
+
+
+def _resolve_config_path(input_path: Path) -> Optional[Path]:
+    if input_path.exists():
+        return input_path
+    alt = Path("debate_configurations") / input_path
+    if alt.exists():
+        logger.info(f"Config found in default directory: {alt}")
+        return alt
+    return None
+
+
+def _get_overrides(args: argparse.Namespace) -> Dict[str, Any]:
+    overrides = {}
+
+    mappings = [
+        ("part_role", args.part_role, "PARTICIPANT_ROLE"),
+        ("part_brain", args.part_brain, "PARTICIPANT_BRAIN"),
+        ("part_attitude", args.part_attitude, "PARTICIPANT_ATTITUDE"),
+        ("part_mindset", args.part_mindset, "PARTICIPANT_MINDSET"),
+        ("part_gender", None, "PARTICIPANT_GENDER"),
+        ("part_tolerant", None, "PARTICIPANT_TOLERANT"),
+        ("part_insults", args.part_insults, "PARTICIPANT_INSULTS"),
+        ("part_lies", args.part_lies, "PARTICIPANT_LIES"),
+        ("mod_role", args.mod_role, "MODERATOR_ROLE"),
+        ("mod_brain", args.mod_brain, "MODERATOR_BRAIN"),
+        ("mod_attitude", None, "MODERATOR_ATTITUDE"),
+        ("mod_mindset", args.mod_mindset, "MODERATOR_MINDSET"),
+        ("mod_gender", None, "MODERATOR_GENDER"),
+        ("mod_tolerant", None, "MODERATOR_TOLERANT"),
+        ("mod_insults", args.mod_insults, "MODERATOR_INSULTS"),
+        ("mod_lies", args.mod_lies, "MODERATOR_LIES"),
+        ("max_letters", args.max_turn_letters, None),
+    ]
+
+    for key, arg_val, env_var in mappings:
+        val = arg_val
+        if not val and env_var:
+            val = os.getenv(env_var)
+
+        if val and str(val).strip():
+            if str(val).lower() == "true":
+                val = True
+            elif str(val).lower() == "false":
+                val = False
+            overrides[key] = val
+
+    return overrides
+
+
+def run_single_debate(
+    index: int, config: Dict[str, Any], session_id: str, overrides: Dict[str, Any]
+) -> Optional[Path]:
+    try:
+        logger.info(f"Starting Run #{index + 1}")
+        debate = Debate(
+            topic_name=config["topic_name"],
+            description=config["description"],
+            allowed_positions=config["allowed_positions"],
+            session_id=session_id,
+            overrides=overrides,
+        )
+        result_path_str = debate.run()
+        return Path(result_path_str) if result_path_str else None
+    except Exception as e:
+        logger.exception(f"Critical failure in Run #{index + 1}: {e}")
+        return None
+
+
+def main():
+    args = parse_arguments()
+    _configure_environment(args)
+
+    config_path = _resolve_config_path(args.config_file)
+    if not config_path:
+        logger.error(f"Config not found: {args.config_file}")
+        sys.exit(1)
+
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            config = json.load(f)
+    except Exception as e:
+        logger.error(f"Invalid JSON: {e}")
+        sys.exit(1)
+
+    overrides = _get_overrides(args)
+    if overrides:
+        logger.info(f"Active Overrides: {overrides}")
+
+    session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    reps = args.repetitions or int(os.getenv("DEBATE_REPETITIONS", "1"))
+
+    logger.info(f"Session: {session_id} | Repetitions: {reps}")
+    successful = []
+
+    if args.parallel:
+        logger.info(f"Mode: PARALLEL ({args.workers} workers)")
+        with ThreadPoolExecutor(max_workers=args.workers) as exc:
+            futs = {
+                exc.submit(run_single_debate, i, config, session_id, overrides): i
+                for i in range(reps)
+            }
+            for f in as_completed(futs):
+                if res := f.result():
+                    successful.append(res)
+    else:
+        logger.info("Mode: SEQUENTIAL")
+        for i in range(reps):
+            if res := run_single_debate(i, config, session_id, overrides):
+                successful.append(res)
+
+    summarizer = DebateBatchSummarizer(successful)
+    summarizer.generate_report()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+./debates/__init__.py:
+```
+```
+
+./debates/models/position_change_check.py:
+```
+from pydantic import BaseModel
+
+
+class PositionChangeCheck(BaseModel):
+    has_changed: bool
+    new_position: str
+    reasoning: str
+```
+
+./debates/models/__init__.py:
+```
+from .participant import Participant
+from .debater import Debater
+from .moderator import Moderator
+from .intervention import Intervention
+
+# Resolve circular reference: Intervention uses "Participant" as a field type.
+# We must rebuild the model now that Participant is fully defined and available in this scope.
+Intervention.model_rebuild(_types_namespace={"Participant": Participant})
+```
+
+./debates/models/moderator.py:
+```
+import json
+import os
+import re
+from typing import Any, Dict, List, Optional, Tuple
+
+from debates.enums import MindsetType, ModeratorAction, RoleType
+from debates.logger import logger
+from debates.models.intervention import Intervention
+from debates.models.participant import Participant
+
+
+class Moderator(Participant):
+    allowed_to_intervene_with_own_position: bool
+    allowed_to_skip_turn: bool
+    allowed_to_stop_debate: bool
+    allowed_to_veto_participant: bool
+
+    def decide_intervention(
+        self,
+        history: List[Intervention],
+        next_speaker: "Participant",
+        active_participants_count: int,
+        global_max_letters: int = 2000,
+    ) -> Tuple[ModeratorAction, str, str, Optional[Intervention]]:
+        if len(history) <= 1:
+            return ModeratorAction.NONE, "", "", None
+
+        last_intervention = history[-1]
+        last_speaker_name = (
+            last_intervention.participant.name
+            if last_intervention.participant
+            else "SYSTEM"
+        )
+        last_speaker_obj = last_intervention.participant
+
+        if last_speaker_name == "SYSTEM" or last_speaker_name == self.name:
+            return ModeratorAction.NONE, "", "", None
+
+        logger.info(
+            f"Moderator {self.name} is evaluating intervention regarding {last_speaker_name}..."
+        )
+
+        last_length = len(last_intervention.answer)
+        is_too_long = last_length > (global_max_letters + 100)
+
+        language = os.getenv("LANGUAGE", "English")
+        max_strikes = int(os.getenv("MAX_STRIKES_FOR_VETO", "3"))
+        personality_prompt = self._build_moderator_personality()
+
+        strikes = getattr(last_speaker_obj, "strikes", 0) if last_speaker_obj else 0
+
+        tools = []
+        if self.allowed_to_veto_participant:
+            tools.append(f"{ModeratorAction.VETO.value} (Ban LAST speaker permanently)")
+        if self.allowed_to_skip_turn:
+            tools.append(
+                f"{ModeratorAction.SANCTION.value} (Give a Strike to {last_speaker_name}. {max_strikes} Strikes = Veto. Also skips their NEXT turn)"
+            )
+            tools.append(
+                f"{ModeratorAction.SKIP.value} (Skip the UPCOMING speaker, usually only if you hate them specifically)"
+            )
+        if self.allowed_to_stop_debate:
+            tools.append(f"{ModeratorAction.STOP.value} (End debate now)")
+        if self.allowed_to_intervene_with_own_position:
+            tools.append(
+                f"{ModeratorAction.INTERVENE.value} (Speak your mind/scold without penalty)"
+            )
+
+        if is_too_long:
+            tools.append(
+                f"{ModeratorAction.LIMIT.value} (REDUCE next turn length for {last_speaker_name} because they spoke too much)"
+            )
+
+        tools.append(f"{ModeratorAction.NONE.value} (Let them continue)")
+
+        tools_str = ", ".join(tools)
+
+        system_prompt = (
+            f"You are {self.name}, the MODERATOR.\n"
+            f"Role: {self.role.value}, Attitude: {self.attitude_type.value}.\n"
+            f"TOOLS: [{tools_str}]\n{personality_prompt}\nRespond in {language}."
+        )
+
+        transcript = self._format_history(history[-3:])
+
+        violation_text = ""
+        if is_too_long:
+            violation_text = f"WARNING: {last_speaker_name} used {last_length} chars (Limit: {global_max_letters}). You can use {ModeratorAction.LIMIT.value} to penalize them."
+
+        user_prompt = (
+            f"{transcript}\n\n"
+            f"ANALYSIS TASK:\n"
+            f"LAST speaker: {last_speaker_name} (Strikes: {strikes}/{max_strikes}).\n"
+            f"NEXT speaker: {next_speaker.name}.\n"
+            f"{violation_text}\n\n"
+            f"RULES:\n"
+            f"- {ModeratorAction.SANCTION.value}: For bad behavior (insults, lies).\n"
+            f"- {ModeratorAction.LIMIT.value}: For length violations (reduces next turn to 50%).\n"
+            f"- {ModeratorAction.INTERVENE.value}: Scold/Comment.\n\n"
+            f"Format:\nACTION|REASON|MESSAGE_TEXT"
+        )
+
+        try:
+            response_text, _, cost = self._execute_llm_call(
+                system_prompt, user_prompt, 1000
+            )
+
+            parts = response_text.strip().split("|")
+            if len(parts) < 3:
+                return ModeratorAction.NONE, "", "", None
+
+            raw_action = parts[0].strip().upper()
+            raw_action = re.sub(r"^(ACTION|DECISION)[:\s]*", "", raw_action).strip()
+
+            try:
+                action = ModeratorAction(raw_action)
+            except ValueError:
+                if "INTERVENE" in raw_action:
+                    action = ModeratorAction.INTERVENE
+                elif "SANCTION" in raw_action:
+                    action = ModeratorAction.SANCTION
+                elif "LIMIT" in raw_action:
+                    action = ModeratorAction.LIMIT
+                else:
+                    action = ModeratorAction.NONE
+
+            reason = parts[1].strip()
+            reason = re.sub(r"^(REASON)[:\s]*", "", reason).strip()
+
+            message = parts[2].strip()
+            message = re.sub(r"^(MESSAGE)[:\s]*", "", message).strip()
+
+            target_name = last_speaker_name
+
+            if action == ModeratorAction.VETO and not self.allowed_to_veto_participant:
+                action = ModeratorAction.SANCTION
+            if action == ModeratorAction.SANCTION and not self.allowed_to_skip_turn:
+                action = ModeratorAction.INTERVENE
+            if action == ModeratorAction.SKIP:
+                if not self.allowed_to_skip_turn:
+                    action = ModeratorAction.INTERVENE
+                target_name = next_speaker.name
+
+            if action == ModeratorAction.STOP and not self.allowed_to_stop_debate:
+                action = ModeratorAction.INTERVENE
+            if (
+                action == ModeratorAction.INTERVENE
+                and not self.allowed_to_intervene_with_own_position
+            ):
+                action = ModeratorAction.NONE
+
+            if action == ModeratorAction.LIMIT and last_speaker_obj:
+                new_limit = max(500, global_max_letters // 2)
+                last_speaker_obj.next_turn_char_limit = new_limit
+                message += f" [PENALTY: Next turn limited to {new_limit} chars]"
+
+            if action == ModeratorAction.VETO and active_participants_count <= 2:
+                action = ModeratorAction.INTERVENE
+                message = "[I wanted to ban you, but we need people] " + message
+
+            logger.info(
+                f"Moderator Decision: {action.value} (Target: {target_name}). Reason: {reason}"
+            )
+            logger.info(f"Moderator Check Cost: ${cost:.6f}")
+
+            if action == ModeratorAction.NONE:
+                return ModeratorAction.NONE, "", "", None
+
+            public_message = (
+                f"{message}\n\n[MODERATOR ACTION: {action.value} | REASON: {reason}]"
+            )
+
+            return (
+                action,
+                target_name,
+                reason,
+                Intervention(
+                    participant=self,
+                    answer=public_message,
+                    input_tokens=0,
+                    output_tokens=0,
+                    cost=cost,
+                    participant_snapshot_position="Moderator",  # Hardcoded role
+                ),
+            )
+
+        except Exception as e:
+            logger.error(f"Error in moderator decision: {e}")
+            return ModeratorAction.NONE, "", "", None
+
+    def evaluate_debate_as_judge(
+        self,
+        topic: str,
+        interventions: List[Intervention],
+        participants: List[Participant],
+    ) -> Dict[str, Any]:
+        logger.info(f"Moderator {self.name} is judging the debate...")
+        language = os.getenv("LANGUAGE", "English")
+
+        transcript_text = ""
+        for i in interventions:
+            name = i.participant.name if i.participant else "SYSTEM"
+            transcript_text += f"{name}: {i.answer[:300]}...\n"
+
+        candidates = [p.name for p in participants if p.name != self.name]
+
+        system_prompt = (
+            f"You are {self.name}, the Moderator and Judge.\n"
+            f"Your Role: {self.role.value}, Attitude: {self.attitude_type.value}.\n"
+            f"Task: Evaluate the debate objectively based on Logic, Rhetoric, and Civility."
+        )
+
+        user_prompt = (
+            f"TOPIC: {topic}\nTRANSCRIPT:\n{transcript_text}\n\n"
+            f"Evaluate participants: {', '.join(candidates)}\n"
+            f"Respond in VALID JSON format.\n"
+            f"IMPORTANT: The content of the 'critique' field MUST be written in {language}.\n"
+            f"Format:\n"
+            f"{{\n"
+            f'  "scores": {{ "Name": {{ "logic": 8, "rhetoric": 7, "civility": 9 }} }},\n'
+            f'  "technical_winner": "Name",\n'
+            f'  "critique": "Overall brief critique of the debate in {language}."\n'
+            f"}}"
+        )
+
+        try:
+            response_text, _, cost = self._execute_llm_call(
+                system_prompt, user_prompt, 2000
+            )
+
+            clean_text = response_text.replace("```json", "").replace("```", "").strip()
+            if "{" in clean_text and "}" in clean_text:
+                start = clean_text.find("{")
+                end = clean_text.rfind("}") + 1
+                clean_text = clean_text[start:end]
+
+            result = json.loads(clean_text)
+            self.total_cost += cost
+            return result
+        except Exception as e:
+            logger.error(f"Moderator Judgment failed: {e}")
+            return {}
+
+    def break_tie(self, candidates: List[str]) -> str:
+        return candidates[0]
+
+    def _build_moderator_personality(self) -> str:
+        instructions = ""
+
+        if self.role == RoleType.ILLITERATE:
+            instructions += "STYLE: Uneducated moderator. Simple words. Emotional."
+        elif self.role == RoleType.GENERAL_KNOWLEDGE:
+            instructions += "STYLE: Regular person. Common sense. Clear language."
+        elif self.role in [RoleType.SCHOLAR, RoleType.EXPERT]:
+            instructions += (
+                "STYLE: Academic moderator. Pedantic. Logical. Strict vocabulary."
+            )
+
+        if self.mindset == MindsetType.OPEN_MINDED:
+            instructions += "\nMINDSET: Willing to listen to all sides."
+        elif self.mindset == MindsetType.CLOSE_MINDED:
+            instructions += "\nMINDSET: Stubborn. You have your favorites."
+
+        if not self.tolerant:
+            instructions += f"\nBEHAVIOR: BIASED and INTOLERANT. Silence opposition using {ModeratorAction.SANCTION.value}."
+        else:
+            instructions += "\nBEHAVIOR: Fair but firm."
+
+        if self.insults_allowed:
+            instructions += "\nTONE: Rude and aggressive."
+
+        return instructions
+```
+
+./debates/models/participant.py:
+```
+import json
+import os
+import random
+import re
+from functools import cached_property
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+from litellm import completion, completion_cost
+from pydantic import BaseModel, ConfigDict
+
+from debates.enums import (
+    AttitudeType,
+    BrainType,
+    EthnicityType,
+    GenderType,
+    MindsetType,
+    RoleType,
+)
+from debates.logger import logger
+from debates.models.position_change_check import PositionChangeCheck
+
+if TYPE_CHECKING:
+    from debates.base import Debate
+    from debates.models.intervention import Intervention
+
+
+class Participant(BaseModel):
+    model_config = ConfigDict(ignored_types=(cached_property,))
+
+    name: str
+    role: RoleType
+    attitude_type: AttitudeType
+    mindset: MindsetType
+
+    brain: BrainType
+    initial_brain: Optional[BrainType] = None
+
+    original_position: str | None
+    final_position: str | None = None
+
+    gender: GenderType
+    ethnic_group: EthnicityType
+    tolerant: bool
+
+    insults_allowed: bool
+    lies_allowed: bool
+
+    confidence_score: float = 1.0
+    confidence_history: List[float] = []
+
+    total_cost: float = 0.0
+
+    def model_post_init(self, __context):
+        if self.initial_brain is None:
+            self.initial_brain = self.brain
+        if not self.confidence_history:
+            self.confidence_history = [self.confidence_score]
+
+    def __str__(self):
+        return self.full_description
+
+    @property
+    def full_description(self) -> str:
+        attrs = [
+            self.brain.value,
+            self.role.value,
+            self.attitude_type.value,
+            self.mindset.value,
+            self.gender.value,
+            self.ethnic_group.value,
+            f"insults:{self.insults_allowed}",
+            f"lies:{self.lies_allowed}",
+            f"tolerant:{self.tolerant}",
+        ]
+        return f"{self.name} ({', '.join(attrs)}) [{self.current_position}] [Conf: {self.confidence_score:.2f}]"
+
+    @property
+    def current_position(self) -> str:
+        pos = self.final_position if self.final_position else self.original_position
+        return pos if pos else "Undecided"
+
+    @cached_property
+    def role_instructions(self) -> str:
+        if self.role == RoleType.ILLITERATE:
+            return "SPEAKING STYLE: Low education. Simple sentences. Street slang. Never use big words. Rely on anecdotes and feelings. Suspicious of experts."
+        elif self.role in [RoleType.SCHOLAR, RoleType.EXPERT]:
+            return "SPEAKING STYLE: Academic elite. Sophisticated, technical vocabulary. Cite theories/papers. Logical structure. Authoritative tone."
+        elif self.role == RoleType.GENERAL_KNOWLEDGE:
+            return "SPEAKING STYLE: Average person. Natural language. Common sense logic. Clear and relatable."
+        else:
+            return "SPEAKING STYLE: Natural."
+
+    @cached_property
+    def attitude_instructions(self) -> str:
+        base = f"Personality: {self.attitude_type.value}."
+        if not self.tolerant:
+            base += " You are INTOLERANT and biased."
+        else:
+            base += " You are tolerant."
+        return base
+
+    @cached_property
+    def mindset_instructions(self) -> str:
+        if self.mindset == MindsetType.OPEN_MINDED:
+            return "MINDSET: Open-minded. Willing to change opinion if presented with good logic."
+        elif self.mindset == MindsetType.CLOSE_MINDED:
+            return "MINDSET: Close-minded. Stubborn. Very hard to convince."
+        else:
+            return "MINDSET: Neutral."
+
+    @property
+    def confidence_instruction(self) -> str:
+        score = self.confidence_score
+
+        if score >= 0.90:
+            return "CONFIDENCE: EXTREME (0.9-1.0). You are dogmatic, unshakeable, and perhaps arrogant. Your truth is the ONLY truth."
+        elif score >= 0.75:
+            return "CONFIDENCE: HIGH (0.75-0.9). You are very sure of your position. Speak with authority and strong conviction."
+        elif score >= 0.60:
+            return "CONFIDENCE: MODERATE (0.6-0.75). You believe you are right, but you are less aggressive. You rely on logic rather than passion."
+        elif score >= 0.50:
+            return "CONFIDENCE: SHAKY (0.5-0.6). You are defensive. You feel your arguments are being challenged effectively. Show some hesitation."
+        else:
+            return "CONFIDENCE: CRISIS (<0.5). You are doubting everything. You sound confused, weak, or on the verge of changing your mind."
+
+    def _get_system_prompt(self) -> str:
+        language = os.getenv("LANGUAGE", "English")
+
+        aggression = (
+            "HIGH AGGRESSION. Insults encouraged."
+            if self.insults_allowed
+            else "LOW AGGRESSION."
+        )
+        truth = "LIAR. Make up facts." if self.lies_allowed else "Truthful."
+
+        return (
+            f"You are a participant in a debate.\n"
+            f"Name: {self.name}\n"
+            f"Role: {self.role.value}\n"
+            f"Gender: {self.gender.value}\n"
+            f"Ethnicity: {self.ethnic_group.value}\n"
+            f"Current Stance: '{self.current_position}' (Confidence Score: {self.confidence_score:.2f})\n"
+            f"--- GUIDELINES ---\n"
+            f"1. {self.role_instructions}\n"
+            f"2. {self.attitude_instructions}\n"
+            f"3. {self.mindset_instructions}\n"
+            f"4. {aggression}\n"
+            f"5. {truth}\n"
+            f"6. {self.confidence_instruction}\n"
+            f"7. IMPORTANT: When replying, EXPLICITLY mention the name of the person you are addressing (e.g., 'As [Name] said...').\n"
+            f"Respond in {language}."
+        )
+
+    @staticmethod
+    def _format_history(history: List["Intervention"]) -> str:
+        if not history:
+            return "No interventions yet."
+        transcript = "--- TRANSCRIPT ---\n"
+        for idx, intervention in enumerate(history):
+            name = (
+                intervention.participant.name if intervention.participant else "SYSTEM"
+            )
+            transcript += f"[{idx}] {name}: {intervention.answer}\n"
+        transcript += "--- END ---\n"
+        return transcript
+
+    def check_change_position(self, debate: "Debate") -> PositionChangeCheck:
+        logger.info(f"Checking position change for {self.name}...")
+
+        transcript = self._format_history(debate.interventions)
+        language = os.getenv("LANGUAGE", "English")
+
+        open_minded_mult = float(os.getenv("OPEN_MINDED_IMPACT_MULTIPLIER", "1.2"))
+        close_minded_mult = float(os.getenv("CLOSE_MINDED_IMPACT_MULTIPLIER", "0.8"))
+
+        modifier = 1.0
+        if self.mindset == MindsetType.OPEN_MINDED:
+            modifier = open_minded_mult
+        elif self.mindset == MindsetType.CLOSE_MINDED:
+            modifier = close_minded_mult
+
+        system_prompt = (
+            f"You are {self.name}, debating for '{self.current_position}'.\n"
+            f"Current Confidence: {self.confidence_score:.2f} (0.0 to 1.0).\n"
+            f"Personality: {self.attitude_type.value}.\n"
+            f"Mindset: {self.mindset.value}.\n"
+            f"Respond in {language}."
+        )
+
+        user_prompt = (
+            f"{transcript}\n\n"
+            f"INSTRUCTION: Analyze the arguments against your position.\n"
+            f"Determine if your confidence has increased, decreased, or stayed the same.\n"
+            f"Allowed Positions to switch to: {debate.allowed_positions}\n\n"
+            f"Respond in EXACT format:\n"
+            f"DELTA|Value\n"
+            f"REASON|Text\n"
+            f"Examples:\n"
+            f"DELTA|-0.15\nREASON|Arguments were good.\n"
+            f"DELTA|+0.05\nREASON|Their logic was weak.\n"
+        )
+
+        try:
+            response_text, _, cost = self._execute_llm_call(
+                system_prompt, user_prompt, 1000
+            )
+
+            delta = 0.0
+            reason = "No reason parsed"
+
+            # Regex parsing
+            delta_match = re.search(
+                r"DELTA\s*[:|]\s*([+\-]?\d*\.?\d+)", response_text, re.IGNORECASE
+            )
+            if delta_match:
+                try:
+                    delta = float(delta_match.group(1))
+                except ValueError:
+                    pass
+
+            reason_match = re.search(
+                r"REASON\s*[:|]\s*(.+)", response_text, re.IGNORECASE
+            )
+            if reason_match:
+                reason = reason_match.group(1).strip()
+
+            if delta == 0.0 and "DELTA" not in response_text.upper():
+                logger.warning(
+                    f"[{self.name}] LLM output format error in check_change_position."
+                )
+
+            if delta < 0:
+                delta *= modifier
+
+            new_confidence = max(0.0, min(1.0, self.confidence_score + delta))
+            self.confidence_score = new_confidence
+            self.confidence_history.append(new_confidence)
+            self.total_cost += cost
+
+            flip_threshold = float(os.getenv("CONFIDENCE_FLIP_THRESHOLD", "0.3"))
+            post_flip_conf = float(os.getenv("CONFIDENCE_AFTER_FLIP", "0.6"))
+
+            if post_flip_conf <= flip_threshold:
+                adjusted = min(1.0, flip_threshold + 0.15)
+                post_flip_conf = adjusted
+
+            has_changed = False
+            new_pos = self.current_position
+
+            if self.confidence_score < flip_threshold:
+                alternatives = [
+                    pos
+                    for pos in debate.allowed_positions
+                    if pos != self.current_position
+                ]
+
+                if not alternatives:
+                    pass
+                elif len(alternatives) == 1:
+                    new_pos = alternatives[0]
+                    has_changed = True
+                else:
+                    pick_prompt = (
+                        f"Your confidence in '{self.current_position}' has collapsed ({self.confidence_score:.2f}).\n"
+                        f"You MUST switch to one of these: {alternatives}.\n"
+                        f"Which one is most convincing based on the transcript?\n"
+                        f"Respond ONLY with the position name."
+                    )
+                    choice_text, _, _ = self._execute_llm_call(
+                        system_prompt, pick_prompt, 200
+                    )
+                    candidate = choice_text.strip()
+
+                    found = False
+                    for pos in alternatives:
+                        if pos.lower() in candidate.lower():
+                            new_pos = pos
+                            has_changed = True
+                            found = True
+                            break
+
+                    if not found:
+                        new_pos = random.choice(alternatives)
+                        has_changed = True
+                        logger.warning(
+                            f"{self.name} needed to flip but LLM failed. Forced random flip to {new_pos}."
+                        )
+
+            if has_changed:
+                self.final_position = new_pos
+                self.confidence_score = post_flip_conf
+                self.confidence_history.append(post_flip_conf)
+                logger.info(
+                    f"!!! {self.name} FLIPPED from {self.original_position} to {new_pos}. Reason: {reason}"
+                )
+
+            return PositionChangeCheck(
+                has_changed=has_changed,
+                new_position=new_pos,
+                reasoning=f"[Conf: {new_confidence:.2f} -> {self.confidence_score:.2f}] {reason}",
+            )
+
+        except Exception as e:
+            logger.error(f"Error checking position for {self.name}: {e}")
+            return PositionChangeCheck(
+                has_changed=False, new_position=self.current_position, reasoning=str(e)
+            )
+
+    def evaluate_debate_performance(
+        self, history: List["Intervention"], participants: List["Participant"]
+    ) -> Dict[str, Any]:
+        candidates = [p.name for p in participants if p.name != self.name]
+        if not candidates:
+            return {}
+
+        formatted_transcript = ""
+        for idx, intervention in enumerate(history):
+            speaker = (
+                intervention.participant.name if intervention.participant else "SYSTEM"
+            )
+            formatted_transcript += (
+                f"[{idx}] {speaker}: {intervention.answer[:150]}...\n"
+            )
+
+        system_prompt = (
+            f"You are {self.name}. Evaluate the debate performances objectively."
+        )
+
+        user_prompt = (
+            f"TRANSCRIPT:\n{formatted_transcript}\n\n"
+            f"Candidates to evaluate: {', '.join(candidates)}\n\n"
+            f"INSTRUCTION: You must pick a winner, identify the best and worst turn ID from the transcript, and score each opponent (0-10).\n"
+            f"Do not vote for yourself.\n\n"
+            f"Respond in VALID JSON format ONLY:\n"
+            f"{{\n"
+            f'  "winner": "Name of Winner",\n'
+            f'  "best_turn": 12,\n'
+            f'  "worst_turn": 5,\n'
+            f'  "scores": {{ "Opponent1": 8.5, "Opponent2": 4.0 }}\n'
+            f"}}"
+        )
+
+        try:
+            response_text, _, cost = self._execute_llm_call(
+                system_prompt, user_prompt, 1000
+            )
+            self.total_cost += cost
+
+            logger.info(f"[{self.name}] Evaluation Raw Response:\n{response_text}")
+
+            clean_text = response_text.replace("```json", "").replace("```", "").strip()
+            if "{" in clean_text and "}" in clean_text:
+                start = clean_text.find("{")
+                end = clean_text.rfind("}") + 1
+                clean_text = clean_text[start:end]
+
+            result = json.loads(clean_text)
+
+            if "winner" not in result:
+                result["winner"] = None
+            if "scores" not in result:
+                result["scores"] = {}
+
+            return result
+
+        except Exception as e:
+            logger.error(
+                f"❌ Evaluation failed for {self.name} (Brain: {self.brain.value}): {e}"
+            )
+            return {}
+
+    def answer(self, history: List["Intervention"], max_letters: int) -> "Intervention":
+        from debates.models.intervention import Intervention
+
+        effective_limit = (
+            self.next_turn_char_limit
+            if self.next_turn_char_limit is not None
+            else max_letters
+        )
+
+        logger.info(
+            f"Participant {self.name} (Brain: {self.brain.value}) is starting turn. Stance: {self.current_position}. Limit: {effective_limit} chars."
+        )
+
+        system_prompt = self._get_system_prompt()
+        context = self._format_history(history)
+
+        use_cot = self.role in [RoleType.EXPERT, RoleType.SCHOLAR]
+
+        instruction = ""
+        if use_cot:
+            instruction = (
+                "FORMAT REQUIREMENT: Use Structured Thinking.\n"
+                "1. First, write 'THOUGHTS:' and analyze the opponent's logic, fallacies, and your strategy.\n"
+                "2. Then, write 'RESPONSE:' and provide your actual spoken reply.\n"
+                "3. You MUST explicitly mention the person you are replying to.\n"
+                "Constraint: Only the RESPONSE part counts towards the character limit."
+            )
+        else:
+            instruction = "Respond directly. You MUST explicitly mention the person you are replying to."
+
+        user_prompt = (
+            f"{context}\n\n{instruction}\nConstraint: Max {effective_limit} chars."
+        )
+
+        try:
+            response_text, (in_tokens, out_tokens), cost = self._execute_llm_call(
+                system_prompt, user_prompt, effective_limit + 500
+            )
+            self.total_cost += cost
+
+            final_answer = response_text
+            if use_cot and "RESPONSE:" in response_text:
+                parts = response_text.split("RESPONSE:")
+                thoughts = parts[0].replace("THOUGHTS:", "").strip()
+                extracted_response = parts[1].strip()
+
+                if extracted_response:
+                    final_answer = extracted_response
+                    logger.debug(f"[{self.name} THOUGHTS]: {thoughts}")
+                else:
+                    logger.warning(
+                        f"⚠️ {self.name} generated CoT but EMPTY response. Using raw text fallback."
+                    )
+                    final_answer = f"[Internal Monologue]: {thoughts}"
+
+            if not final_answer.strip():
+                logger.warning(
+                    f"⚠️ {self.name} returned completely empty text. Inserting silence placeholder."
+                )
+                final_answer = "(...remains silent and contemplative...)"
+
+            # Snapshot Position Here
+            return Intervention(
+                participant=self,
+                answer=final_answer,
+                input_tokens=in_tokens,
+                output_tokens=out_tokens,
+                cost=cost,
+                participant_snapshot_position=self.current_position,
+            )
+
+        except Exception as e:
+            logger.exception(f"Error answering: {e}")
+            raise e
+
+    def _switch_brain(self, error_message: str):
+        old = self.brain
+
+        raw_allowed = os.getenv("AVAILABLE_BRAINS", "all").lower().strip()
+        allowed_list = []
+        if raw_allowed == "all" or not raw_allowed:
+            allowed_list = list(BrainType)
+        else:
+            keys = [x.strip() for x in raw_allowed.split(",")]
+            for b in BrainType:
+                if b.value in keys:
+                    allowed_list.append(b)
+
+        if not allowed_list:
+            allowed_list = list(BrainType)
+
+        candidates = [b for b in allowed_list if b != old]
+
+        if not candidates:
+            logger.error(
+                f"FATAL: No available brains left to switch to for {self.name} (failed: {old})"
+            )
+            return False
+
+        self.brain = random.choice(candidates)
+        logger.warning(
+            f"⚠️ BRAIN SWITCH: {self.name} changed from {old} -> {self.brain} due to error: {error_message}"
+        )
+        return True
+
+    def _execute_llm_call(self, system_prompt: str, user_prompt: str, max_letters: int):
+        attempts = 0
+        while True:
+            model_name: str = ""
+            api_key: Optional[str] = None
+
+            if self.brain == BrainType.GEMINI:
+                raw = os.getenv("GEMINI_MODEL") or "gemini-1.5-flash"
+                model_name = f"gemini/{raw}" if not raw.startswith("gemini/") else raw
+                api_key = os.getenv("GEMINI_API_KEY")
+            elif self.brain == BrainType.CLAUDE:
+                raw = os.getenv("ANTHROPIC_MODEL") or "claude-3-5-sonnet-latest"
+                model_name = (
+                    f"anthropic/{raw}" if not raw.startswith("anthropic/") else raw
+                )
+                api_key = os.getenv("ANTHROPIC_API_KEY")
+            elif self.brain == BrainType.DEEPSEEK:
+                raw = os.getenv("DEEPSEEK_MODEL") or "deepseek-chat"
+                model_name = (
+                    f"deepseek/{raw}" if not raw.startswith("deepseek/") else raw
+                )
+                api_key = os.getenv("DEEPSEEK_API_KEY")
+            elif self.brain == BrainType.OPENAI:
+                model_name = os.getenv("OPENAI_MODEL") or "gpt-4o"
+                api_key = os.getenv("OPENAI_API_KEY")
+
+            if not api_key or api_key == "CHANGE-ME":
+                if not self._switch_brain("No Key"):
+                    return "Mock Response", (0, 0), 0.0
+                continue
+
+            try:
+                response = completion(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    max_tokens=max_letters if max_letters < 4096 else 4096,
+                    api_key=api_key,
+                )
+                cost = completion_cost(completion_response=response)
+                return (
+                    response.choices[0].message.content,
+                    (response.usage.prompt_tokens, response.usage.completion_tokens),
+                    cost,
+                )
+            except Exception as e:
+                if attempts < 3:
+                    if self._switch_brain(str(e)):
+                        attempts += 1
+                        continue
+                raise e
+```
+
+./debates/models/results.py:
+```
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field
+
+# --- Shared Sub-Models ---
+
+
+class UsageStats(BaseModel):
+    input_tokens: int
+    output_tokens: int
+    cost: float
+
+
+class TranscriptEntry(BaseModel):
+    participant_name: str
+    participant_position: str  # Nuevo campo
+    confidence: float
+    text: str
+    usage: UsageStats
+
+
+class PositionChangeEntry(BaseModel):
+    name: str
+    from_position: str = Field(alias="from")
+    to_position: str = Field(alias="to")
+    round_when_changed: int
+    debate_id: Optional[str] = None
+
+
+class InterventionReference(BaseModel):
+    id: int
+    participant: str
+    text: str
+
+
+class ParticipantScore(BaseModel):
+    voter: str
+    winner: Optional[str] = None
+    best_intervention: Optional[InterventionReference] = None
+    worst_intervention: Optional[InterventionReference] = None
+    scores: Dict[str, float]
+
+
+class GlobalOutcome(BaseModel):
+    winner_name: str
+    winner_position: str
+    vote_distribution: Dict[str, int]
+    average_scores: Dict[str, float]
+    best_intervention: Optional[InterventionReference] = None
+    worst_intervention: Optional[InterventionReference] = None
+
+
+class ModeratorStats(BaseModel):
+    interventions: int
+    sanctions: int
+    skips: int
+    vetos: int
+    stops: int
+    limits: int
+
+
+# --- Per-Debate Result Model ---
+
+
+class DebateMetadata(BaseModel):
+    id: str
+    session_id: str
+    topic: str
+    description: str
+    date: str
+    total_rounds_configured: int
+    total_turns_configured: int
+    allowed_positions: List[str]
+    total_estimated_cost_usd: float
+
+
+class ParticipantEntry(BaseModel):
+    name: str
+    role: str
+    attitude_type: str
+    brain: str
+    initial_brain: str
+    original_position: str
+    final_position: Optional[str]
+    gender: str
+    ethnic_group: str
+    tolerant: bool
+    insults_allowed: bool
+    lies_allowed: bool
+    is_vetoed: bool
+    veto_reason: Optional[str]
+    strikes: int
+    skip_next_turn: bool
+    total_cost: float
+    order_in_debate: int
+    confidence_history: List[float]
+    final_confidence: float
+
+
+class EvaluationSection(BaseModel):
+    participants: List[ParticipantScore]
+    moderator: Optional[Dict[str, Any]] = None
+    global_outcome: Optional[GlobalOutcome] = None
+
+
+class DebateResult(BaseModel):
+    metadata: DebateMetadata
+    participants: List[ParticipantEntry]
+    moderator: Optional[Dict[str, Any]] = None
+    moderator_stats: ModeratorStats
+    position_changes: List[PositionChangeEntry]
+    transcript: List[TranscriptEntry]
+    evaluation: EvaluationSection
+
+
+# --- Final Batch Summary Models ---
+
+
+class SessionSummary(BaseModel):
+    total_debates: int
+    total_cost_usd: float
+    total_rounds: int
+    total_participants: int
+    global_avg_score: float
+    date_generated: str
+
+
+class WinnerDetail(BaseModel):
+    debate_id: str
+    winner_name: str
+    winner_position: str
+
+
+class PositionStat(BaseModel):
+    count: int
+    mean_initial_confidence: float
+    mean_final_confidence: float
+    percentage: float
+
+
+class ScoreStat(BaseModel):
+    mean: float
+    max: float
+    min: float
+    count: int
+
+
+class HighlightTurn(BaseModel):
+    debate_id: str
+    type: str
+    text: str
+    participant_name: str
+    participant_position: str
+    participant_confidence: float
+
+
+class FinalSummaryResult(BaseModel):
+    session_summary: SessionSummary
+    moderator_summary: Dict[str, int]
+    winners_by_position: Dict[str, int]
+    winners_details: List[WinnerDetail]
+    position_changes: List[PositionChangeEntry]
+    final_position_distribution: Dict[str, PositionStat]
+    mean_scores: Dict[str, ScoreStat]
+    highlight_turns: List[HighlightTurn]
+```
+
+./debates/models/intervention.py:
+```
+from typing import TYPE_CHECKING, Optional
+
+from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from debates.models.participant import Participant
+
+
+class Intervention(BaseModel):
+    participant: Optional["Participant"] = None
+    answer: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost: float = 0.0
+    participant_snapshot_position: str = "Unknown"  # Snapshot histórico
+```
+
+./debates/models/debater.py:
+```
+from typing import Optional
+
+from debates.models.participant import Participant
+
+
+class Debater(Participant):
+    order_in_debate: int | None
+    is_vetoed: bool = False
+    veto_reason: Optional[str] = None
+
+    strikes: int = 0
+    skip_next_turn: bool = False
+
+    next_turn_char_limit: Optional[int] = None
+```
+
+./debates/logger.py:
+```
+import logging
+import sys
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+log_dir = Path("debate_logs")
+log_dir.mkdir(exist_ok=True)
+
+logger = logging.getLogger("Debaite")
+logger.setLevel(logging.DEBUG)
+logger.propagate = False
+
+formatter = logging.Formatter(
+    "%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s"
+)
+
+if not logger.handlers:
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(logging.INFO)
+    console.setFormatter(formatter)
+    logger.addHandler(console)
+
+    file_h = RotatingFileHandler(
+        log_dir / "debaite.log",
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    file_h.setLevel(logging.DEBUG)
+    file_h.setFormatter(formatter)
+    logger.addHandler(file_h)
+
+
+def get_debate_logger(topic_name, session_id, debate_id):
+    safe_topic = (
+        "".join(c if c.isalnum() or c in (" ", "-", "_") else "" for c in topic_name)
+        .strip()
+        .replace(" ", "_")
+        .lower()
+    )
+    path = log_dir / safe_topic / session_id
+    path.mkdir(parents=True, exist_ok=True)
+
+    l = logging.getLogger(f"Debate_{debate_id}")
+    l.setLevel(logging.DEBUG)
+    l.propagate = False
+
+    if not l.handlers:
+        fh = logging.FileHandler(path / f"{debate_id}.log", encoding="utf-8")
+        fh.setFormatter(
+            logging.Formatter("%(asctime)s - %(message)s", datefmt="%H:%M:%S")
+        )
+        l.addHandler(fh)
+
+    return l
+```
+
+./debates/base.py:
+```
+import json
+import logging
+import os
+import random
+import re
+import subprocess
+from collections import Counter
+from datetime import datetime
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple, Type
+
+from faker import Faker
+from litellm import completion
+
+from debates.enums import (
+    AttitudeType,
+    BrainType,
+    EthnicityType,
+    GenderType,
+    MindsetType,
+    ModeratorAction,
+    RoleType,
+)
+from debates.logger import get_debate_logger, logger
+from debates.models import Debater, Intervention, Moderator
+from debates.models.results import (
+    DebateMetadata,
+    DebateResult,
+    EvaluationSection,
+    GlobalOutcome,
+    InterventionReference,
+    ModeratorStats,
+    ParticipantEntry,
+    ParticipantScore,
+    PositionChangeEntry,
+    TranscriptEntry,
+    UsageStats,
+)
+
+
+class Debate:
+    topic_name: str
+    description: str
+    allowed_positions: List[str]
+    participants: List[Debater]
+    total_turns: int
+    total_rounds: int
+    moderator: Moderator | None
+    interventions: List[Intervention]  # Context buffer
+    full_transcript: List[Intervention]  # Full history
+
+    session_id: str
+    debate_id: str
+
+    position_changes_log: List[PositionChangeEntry]
+    moderator_stats: Dict[str, int]
+    evaluation_data: EvaluationSection
+    overrides: Dict[str, Any]
+    accumulated_system_cost: float = 0.0
+
+    def __init__(
+        self,
+        topic_name: str,
+        description: str,
+        allowed_positions: List[str],
+        session_id: str,
+        overrides: Dict[str, Any] = None,
+    ):
+        self.fake = Faker()
+        self.topic_name = topic_name
+        self.description = description
+        self.allowed_positions = allowed_positions
+        self.session_id = session_id
+        self.debate_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        self.topic_logger = get_debate_logger(topic_name, session_id, self.debate_id)
+        self.overrides = overrides or {}
+
+        self.participants = []
+        self.interventions = []
+        self.full_transcript = []
+        self.position_changes_log = []
+        self.moderator_stats = {
+            "interventions": 0,
+            "sanctions": 0,
+            "skips": 0,
+            "vetos": 0,
+            "stops": 0,
+            "limits": 0,
+        }
+        self.evaluation_data = EvaluationSection(participants=[])
+
+        self.generate_participants()
+        self.establish_total_turns()
+        self.establish_total_rounds()
+        self.establish_max_letters_per_participant_per_turn()
+        self.establish_references_required()
+        self.establish_moderator()
+
+    @property
+    def debate_prompt(self) -> str:
+        roster = "\n".join(
+            [
+                f"- {p.name} ({p.role.value}): {p.original_position}"
+                for p in self.participants
+            ]
+        )
+        mod_text = (
+            f"Moderator: {self.moderator.name}" if self.moderator else "No Moderator"
+        )
+        return f"Topic: {self.topic_name}\nContext: {self.description}\nRoster:\n{roster}\n{mod_text}"
+
+    def _get_allowed_brains(self) -> List[BrainType]:
+        raw = os.getenv("AVAILABLE_BRAINS", "all").lower().strip()
+        if raw == "all" or not raw:
+            return list(BrainType)
+        allowed_keys = [x.strip() for x in raw.split(",")]
+        valid = [b for b in BrainType if b.value in allowed_keys]
+        return valid if valid else list(BrainType)
+
+    def _resolve_attr(
+        self, key: str, enum_cls: Optional[Type[Enum]], default_options: List[Any]
+    ) -> Any:
+        val = self.overrides.get(key)
+        if val is not None:
+            if isinstance(val, bool):
+                return val
+            if enum_cls:
+                try:
+                    return enum_cls(val)
+                except ValueError:
+                    val_str = str(val).lower()
+                    for e in enum_cls:
+                        if e.value.lower() == val_str or e.name.lower() == val_str:
+                            return e
+            return val
+        return random.choice(default_options)
+
+    def _generate_base_profile(self, is_moderator: bool = False) -> Dict[str, Any]:
+        prefix = "mod_" if is_moderator else "part_"
+        allowed_brains = self._get_allowed_brains()
+
+        return {
+            "name": self.fake.first_name(),
+            "role": self._resolve_attr(f"{prefix}role", RoleType, list(RoleType)),
+            "attitude_type": self._resolve_attr(
+                f"{prefix}attitude", AttitudeType, list(AttitudeType)
+            ),
+            "mindset": self._resolve_attr(
+                f"{prefix}mindset", MindsetType, list(MindsetType)
+            ),
+            "brain": self._resolve_attr(f"{prefix}brain", BrainType, allowed_brains),
+            "gender": self._resolve_attr(
+                f"{prefix}gender", GenderType, list(GenderType)
+            ),
+            "ethnic_group": random.choice(list(EthnicityType)),
+            "tolerant": self._resolve_attr(f"{prefix}tolerant", None, [True, False]),
+            "insults_allowed": self._resolve_attr(
+                f"{prefix}insults", None, [True, False]
+            ),
+            "lies_allowed": self._resolve_attr(f"{prefix}lies", None, [True, False]),
+            "confidence_score": random.uniform(0.6, 1.0),
+            "final_position": None,
+        }
+
+    def generate_participants(self):
+        min_p = int(os.getenv("MIN_PARTICIPANTS", "2"))
+        max_p = int(os.getenv("MAX_PARTICIPANTS", "5"))
+
+        count = random.randint(min_p, max_p)
+        needed_positions = len(self.allowed_positions)
+        if count < needed_positions and max_p >= needed_positions:
+            logger.info(
+                f"Auto-adjusting participant count from {count} to {needed_positions} to cover all positions."
+            )
+            count = needed_positions
+
+        positions_to_assign = []
+        pool = list(self.allowed_positions)
+        random.shuffle(pool)
+
+        while len(positions_to_assign) < count:
+            if not pool:
+                pool = list(self.allowed_positions)
+                random.shuffle(pool)
+            positions_to_assign.append(pool.pop(0))
+
+        random.shuffle(positions_to_assign)
+
+        for i in range(count):
+            data = self._generate_base_profile(is_moderator=False)
+            data["original_position"] = positions_to_assign[i]
+            data["initial_brain"] = data["brain"]
+            data["order_in_debate"] = i + 1
+            self.participants.append(Debater(**data))
+
+    def establish_total_turns(self):
+        self.total_turns = random.randint(
+            int(os.getenv("MIN_TOTAL_TURNS", "5")),
+            int(os.getenv("MAX_TOTAL_TURNS", "10")),
+        )
+
+    def establish_total_rounds(self):
+        self.total_rounds = random.randint(
+            int(os.getenv("MIN_TOTAL_ROUNDS", "1")),
+            int(os.getenv("MAX_TOTAL_ROUNDS", "3")),
+        )
+
+    def establish_max_letters_per_participant_per_turn(self):
+        override = self.overrides.get("max_letters")
+        if override:
+            self.max_letters_per_participant_per_turn = int(override)
+            return
+
+        min_l = int(os.getenv("MIN_MAX_LETTERS_PER_PARTICIPANT_PER_TURN", "1000"))
+        max_l = int(os.getenv("MAX_MAX_LETTERS_PER_PARTICIPANT_PER_TURN", "2000"))
+        if min_l > max_l:
+            min_l, max_l = max_l, min_l
+        self.max_letters_per_participant_per_turn = random.randint(min_l, max_l)
+
+    def establish_moderator(self):
+        has_mod_override = any(k.startswith("mod_") for k in self.overrides.keys())
+        should_have_moderator = (
+            True if has_mod_override else random.choice([True, False])
+        )
+
+        if should_have_moderator:
+            data = self._generate_base_profile(is_moderator=True)
+            data["original_position"] = None
+            data.update(
+                {
+                    "allowed_to_intervene_with_own_position": True,
+                    "allowed_to_skip_turn": True,
+                    "allowed_to_stop_debate": True,
+                    "allowed_to_veto_participant": True,
+                    "order_in_debate": 0,
+                }
+            )
+            self.moderator = Moderator(**data)
+        else:
+            self.moderator = None
+
+    def establish_references_required(self):
+        self.references_required = random.choice([True, False])
+
+    def _get_available_providers(self) -> List[Tuple[str, str]]:
+        potential_providers = [
+            ("GEMINI_API_KEY", "GEMINI_MODEL", "gemini/gemini-1.5-flash", "gemini/"),
+            (
+                "DEEPSEEK_API_KEY",
+                "DEEPSEEK_MODEL",
+                "deepseek/deepseek-chat",
+                "deepseek/",
+            ),
+            ("OPENAI_API_KEY", "OPENAI_MODEL", "gpt-4o-mini", ""),
+            (
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_MODEL",
+                "anthropic/claude-3-haiku-20240307",
+                "anthropic/",
+            ),
+        ]
+
+        available = []
+        for key_var, model_var, default_model, prefix in potential_providers:
+            key = os.getenv(key_var)
+            if key and key != "CHANGE-ME":
+                raw_model = os.getenv(model_var, default_model)
+                if prefix and not raw_model.startswith(prefix):
+                    final_model = f"{prefix}{raw_model}"
+                else:
+                    final_model = raw_model
+                available.append((final_model, key))
+        return available
+
+    def _record_intervention(self, intervention: Intervention):
+        self.interventions.append(intervention)
+        self.full_transcript.append(intervention)
+
+    def _summarize_history(self):
+        limit = int(os.getenv("MEMORY_COMPRESSION_TURNS", "10"))
+        if len(self.interventions) <= limit:
+            return
+
+        to_compress = self.interventions[:-5]
+        raw_text = "\n".join(
+            [
+                f"{i.participant.name if i.participant else 'SYSTEM'}: {i.answer}"
+                for i in to_compress
+            ]
+        )
+
+        providers = self._get_available_providers()
+        if not providers:
+            return
+
+        for model, api_key in providers:
+            try:
+                response = completion(
+                    model=model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "Summarize the debate progress concisely.",
+                        },
+                        {"role": "user", "content": raw_text},
+                    ],
+                    api_key=api_key,
+                )
+                summary = response.choices[0].message.content
+                try:
+                    self.accumulated_system_cost += response._hidden_params.get(
+                        "response_cost", 0.0
+                    )
+                except:
+                    pass
+
+                summary_intervention = Intervention(
+                    participant=None,
+                    answer=f"[PREVIOUS SUMMARY]: {summary}",
+                    participant_snapshot_position="System",
+                )
+                self.interventions = [summary_intervention] + self.interventions[-5:]
+                logger.info(f"Memory Compressed successfully using {model}.")
+                break
+            except Exception as e:
+                logger.warning(f"Compression failed with {model}. Trying next...")
+
+    def _log_initial_state(self):
+        part_list = "\n".join([f"- {p.full_description}" for p in self.participants])
+        mod_desc = self.moderator.full_description if self.moderator else "None"
+
+        log_msg = (
+            f"=== DEBATE STARTED ===\n"
+            f"ID: {self.debate_id}\n"
+            f"PROMPT: This is a debate named '{self.topic_name}'.\n"
+            f"The description is: {self.description}\n"
+            f"The Participants are:\n{part_list}\n"
+            f"Moderator: {mod_desc}\n"
+            f"There will be a total of {self.total_rounds} rounds. Each round consists of {self.total_turns} turns per participant.\n"
+            f"Each turn will have a maximum of {self.max_letters_per_participant_per_turn} letters.\n"
+        )
+        self.topic_logger.info(log_msg)
+        logger.info(f"Starting Debate {self.debate_id} on '{self.topic_name}'")
+
+    def run(self) -> str:
+        self._log_initial_state()
+
+        start_msg = ""
+        if self.moderator:
+            start_msg = f"WELCOME.\n{self.debate_prompt}"
+            # Moderator snapshot handled in _record via parameter or default?
+            # Intervention logic in base needs careful manual creation
+            self._record_intervention(
+                Intervention(
+                    participant=self.moderator,
+                    answer=start_msg,
+                    participant_snapshot_position="Moderator",
+                )
+            )
+        else:
+            start_msg = f"SYSTEM: Debate Starts.\n{self.debate_prompt}"
+            self._record_intervention(
+                Intervention(
+                    participant=None,
+                    answer=start_msg,
+                    participant_snapshot_position="System",
+                )
+            )
+
+        debate_active = True
+        max_strikes_limit = int(os.getenv("MAX_STRIKES_FOR_VETO", "3"))
+
+        for round_num in range(1, self.total_rounds + 1):
+            if not debate_active:
+                break
+            self.topic_logger.info(f"--- ROUND {round_num} ---")
+
+            for turn_num in range(1, self.total_turns + 1):
+                if not debate_active:
+                    break
+
+                logger.info(
+                    f"--- Round {round_num}/{self.total_rounds} | Turn {turn_num}/{self.total_turns} ---"
+                )
+
+                self._summarize_history()
+
+                for p in self.participants:
+                    if p.is_vetoed:
+                        continue
+                    if p.skip_next_turn:
+                        msg = f"[SYSTEM] {p.name} SKIPPED (Sanction)."
+                        self._record_intervention(
+                            Intervention(
+                                participant=None,
+                                answer=msg,
+                                participant_snapshot_position="System",
+                            )
+                        )
+                        self.topic_logger.info(msg)
+                        p.skip_next_turn = False
+                        continue
+
+                    active_count = len(
+                        [x for x in self.participants if not x.is_vetoed]
+                    )
+                    if active_count <= 1:
+                        debate_active = False
+                        break
+
+                    if self.moderator:
+                        action, target, reason, mod_msg = (
+                            self.moderator.decide_intervention(
+                                self.interventions,
+                                p,
+                                active_count,
+                                global_max_letters=self.max_letters_per_participant_per_turn,
+                            )
+                        )
+
+                        if mod_msg:
+                            self._record_intervention(mod_msg)
+                            if action == ModeratorAction.INTERVENE:
+                                self.moderator_stats["interventions"] += 1
+                            elif action == ModeratorAction.STOP:
+                                self.moderator_stats["stops"] += 1
+
+                            mod_log = f"MODERATOR ({self.moderator.name})"
+                            if action != ModeratorAction.NONE:
+                                mod_log += f" [ACTION: {action.value} -> {target}]"
+                            mod_log += f": {mod_msg.answer}"
+                            self.topic_logger.info(mod_log)
+                            logger.info(
+                                f"Moderator Action: {action.value} on {target or 'General'}"
+                            )
+
+                        target_p = next(
+                            (x for x in self.participants if x.name == target), None
+                        )
+                        if action == ModeratorAction.STOP:
+                            debate_active = False
+                            break
+
+                        if action == ModeratorAction.VETO and target_p:
+                            target_p.is_vetoed = True
+                            target_p.veto_reason = reason
+                            self.moderator_stats["vetos"] += 1
+                            self.topic_logger.info(
+                                f"!!! {target_p.name} HAS BEEN VETOED (BANNED) !!!"
+                            )
+                            if target_p == p:
+                                continue
+
+                        if action == ModeratorAction.SANCTION and target_p:
+                            target_p.strikes += 1
+                            target_p.skip_next_turn = True
+                            self.moderator_stats["sanctions"] += 1
+                            self.topic_logger.info(
+                                f"! {target_p.name} RECEIVED A STRIKE ({target_p.strikes}/{max_strikes_limit}) !"
+                            )
+                            if target_p.strikes >= max_strikes_limit:
+                                target_p.is_vetoed = True
+                                target_p.veto_reason = f"Max Strikes ({max_strikes_limit}) reached. Last: {reason}"
+                                self.moderator_stats["vetos"] += 1
+                                self.topic_logger.info(
+                                    f"!!! {target_p.name} HAS BEEN VETOED FOR ACCUMULATED STRIKES !!!"
+                                )
+                                if target_p == p:
+                                    continue
+
+                        if action == ModeratorAction.SKIP and target_p:
+                            self.moderator_stats["skips"] += 1
+                            if target_p == p:
+                                msg = f"[SYSTEM] {p.name} SKIPPED by Moderator."
+                                self._record_intervention(
+                                    Intervention(
+                                        participant=None,
+                                        answer=msg,
+                                        participant_snapshot_position="System",
+                                    )
+                                )
+                                self.topic_logger.info(msg)
+                                continue
+                            else:
+                                target_p.skip_next_turn = True
+
+                        if action == ModeratorAction.LIMIT and target_p:
+                            self.moderator_stats["limits"] += 1
+                            self.topic_logger.info(
+                                f"! {target_p.name} PENALIZED: Next turn limited to {target_p.next_turn_char_limit} chars !"
+                            )
+
+                    try:
+                        intervention = p.answer(
+                            self.interventions,
+                            self.max_letters_per_participant_per_turn,
+                        )
+                        self._record_intervention(intervention)
+                        self.topic_logger.info(
+                            f"{p.full_description}: {intervention.answer}"
+                        )
+                        logger.info(f"Turn Cost ({p.name}): ${intervention.cost:.6f}")
+
+                        if p.next_turn_char_limit:
+                            p.next_turn_char_limit = None
+
+                    except Exception as e:
+                        logger.warning(
+                            f"Turn execution skipped for {p.name} due to error: {e}"
+                        )
+                        continue
+
+            self._check_positions(round_num)
+
+        self._evaluate()
+
+        self.topic_logger.info("=== DEBATE FINISHED ===")
+        if self.evaluation_data.global_outcome:
+            win = self.evaluation_data.global_outcome.winner_name
+            self.topic_logger.info(f"CONSENSUS WINNER: {win}")
+
+        self._format_log_file()
+
+        return self.save_results()
+
+    def _format_log_file(self):
+        try:
+            handlers = self.topic_logger.handlers[:]
+            for h in handlers:
+                if isinstance(h, logging.FileHandler):
+                    log_path = h.baseFilename
+                    h.close()
+                    self.topic_logger.removeHandler(h)
+
+                    temp_path = log_path + ".tmp"
+                    with (
+                        open(log_path, encoding="utf-8") as f_in,
+                        open(temp_path, "w", encoding="utf-8") as f_out,
+                    ):
+                        subprocess.run(
+                            ["fold", "-s", "-w", "120"],
+                            stdin=f_in,
+                            stdout=f_out,
+                            check=True,
+                        )
+
+                    os.replace(temp_path, log_path)
+        except Exception as e:
+            logger.error(f"Failed to fold log file: {e}")
+
+    def _check_positions(self, round_num: int):
+        logger.info(f"=== END OF ROUND {round_num} - EVALUATING POSITIONS ===")
+        for p in self.participants:
+            if not p.is_vetoed:
+                old_pos = p.current_position
+                result = p.check_change_position(self)
+
+                if result.has_changed:
+                    self.position_changes_log.append(
+                        PositionChangeEntry(
+                            name=p.name,
+                            from_position=old_pos,
+                            to_position=result.new_position,
+                            round_when_changed=round_num,
+                        )
+                    )
+                    msg = f"!!! POSITION CHANGE: {p.name} flipped from {old_pos} to {result.new_position}"
+                    self.topic_logger.info(msg)
+                    logger.info(msg)
+
+    def _evaluate(self):
+        logger.info("=== STARTING FINAL EVALUATION ===")
+        participant_scores = []
+        votes = []
+        scores_map = {}
+
+        best_id_votes = []
+        worst_id_votes = []
+
+        eval_history = self.interventions
+
+        for p in self.participants:
+            if not p.is_vetoed:
+                logger.info(f"Processing vote from {p.name}...")
+                raw = p.evaluate_debate_performance(eval_history, self.participants)
+
+                best_ref = None
+                if "best_turn" in raw:
+                    idx = raw["best_turn"]
+                    if isinstance(idx, int) and 0 <= idx < len(eval_history):
+                        best_ref = InterventionReference(
+                            id=idx,
+                            participant=(
+                                eval_history[idx].participant.name
+                                if eval_history[idx].participant
+                                else "SYSTEM"
+                            ),
+                            text=eval_history[idx].answer,
+                        )
+                        best_id_votes.append(idx)
+
+                worst_ref = None
+                if "worst_turn" in raw:
+                    idx = raw["worst_turn"]
+                    if isinstance(idx, int) and 0 <= idx < len(eval_history):
+                        worst_ref = InterventionReference(
+                            id=idx,
+                            participant=(
+                                eval_history[idx].participant.name
+                                if eval_history[idx].participant
+                                else "SYSTEM"
+                            ),
+                            text=eval_history[idx].answer,
+                        )
+                        worst_id_votes.append(idx)
+
+                p_score = ParticipantScore(
+                    voter=p.name,
+                    winner=raw.get("winner"),
+                    best_intervention=best_ref,
+                    worst_intervention=worst_ref,
+                    scores=raw.get("scores", {}),
+                )
+                participant_scores.append(p_score)
+
+                if p_score.winner:
+                    votes.append(p_score.winner)
+
+                for k, v in p_score.scores.items():
+                    if k not in scores_map:
+                        scores_map[k] = []
+                    scores_map[k].append(v)
+
+        global_outcome = None
+        if votes:
+            vote_counts = Counter(votes)
+            winner = vote_counts.most_common(1)[0][0]
+            winner_p = next((x for x in self.participants if x.name == winner), None)
+
+            avg_scores = {k: round(sum(v) / len(v), 2) for k, v in scores_map.items()}
+
+            g_best = None
+            if best_id_votes:
+                bid = Counter(best_id_votes).most_common(1)[0][0]
+                g_best = InterventionReference(
+                    id=bid,
+                    participant=(
+                        eval_history[bid].participant.name
+                        if eval_history[bid].participant
+                        else "SYSTEM"
+                    ),
+                    text=eval_history[bid].answer,
+                )
+
+            g_worst = None
+            if worst_id_votes:
+                wid = Counter(worst_id_votes).most_common(1)[0][0]
+                g_worst = InterventionReference(
+                    id=wid,
+                    participant=(
+                        eval_history[wid].participant.name
+                        if eval_history[wid].participant
+                        else "SYSTEM"
+                    ),
+                    text=eval_history[wid].answer,
+                )
+
+            global_outcome = GlobalOutcome(
+                winner_name=winner,
+                winner_position=winner_p.current_position if winner_p else "Unknown",
+                vote_distribution=dict(vote_counts),
+                average_scores=avg_scores,
+                best_intervention=g_best,
+                worst_intervention=g_worst,
+            )
+
+        mod_dict = None
+        if self.moderator:
+            logger.info("Processing Moderator Judgment...")
+            mod_dict = self.moderator.evaluate_debate_as_judge(
+                self.topic_name, eval_history, self.participants
+            )
+
+        self.evaluation_data = EvaluationSection(
+            participants=participant_scores,
+            moderator=mod_dict,
+            global_outcome=global_outcome,
+        )
+
+    def save_results(self) -> str:
+        safe_topic = re.sub(r"[^\w\s-]", "", self.topic_name.lower()).strip()
+        safe_topic = re.sub(r"[-\s]+", "_", safe_topic)
+        folder_path = os.path.join("debate_results", safe_topic, self.session_id)
+        os.makedirs(folder_path, exist_ok=True)
+        full_path = os.path.join(folder_path, f"{self.debate_id}.json")
+
+        transcript_entries = []
+        final_total_cost = self.accumulated_system_cost
+
+        for i in self.full_transcript:
+            final_total_cost += i.cost
+            transcript_entries.append(
+                TranscriptEntry(
+                    participant_name=i.participant.name if i.participant else "SYSTEM",
+                    participant_position=i.participant_snapshot_position,  # Added field map
+                    confidence=(
+                        getattr(i.participant, "confidence_score", 1.0)
+                        if i.participant
+                        else 1.0
+                    ),
+                    text=i.answer,
+                    usage=UsageStats(
+                        input_tokens=i.input_tokens,
+                        output_tokens=i.output_tokens,
+                        cost=i.cost,
+                    ),
+                )
+            )
+
+        p_entries = []
+        for p in self.participants:
+            p_entries.append(
+                ParticipantEntry(
+                    name=p.name,
+                    role=p.role.value,
+                    attitude_type=p.attitude_type.value,
+                    brain=p.brain.value,
+                    initial_brain=(
+                        p.initial_brain.value if p.initial_brain else p.brain.value
+                    ),
+                    original_position=(
+                        p.original_position if p.original_position else "N/A"
+                    ),
+                    final_position=p.current_position,
+                    gender=p.gender.value,
+                    ethnic_group=p.ethnic_group.value,
+                    tolerant=p.tolerant,
+                    insults_allowed=p.insults_allowed,
+                    lies_allowed=p.lies_allowed,
+                    is_vetoed=p.is_vetoed,
+                    veto_reason=p.veto_reason,
+                    strikes=p.strikes,
+                    skip_next_turn=p.skip_next_turn,
+                    total_cost=p.total_cost,
+                    order_in_debate=p.order_in_debate,
+                    confidence_history=p.confidence_history,
+                    final_confidence=p.confidence_score,
+                )
+            )
+            final_total_cost += p.total_cost
+
+        if self.moderator:
+            final_total_cost += self.moderator.total_cost
+
+        meta = DebateMetadata(
+            id=self.debate_id,
+            session_id=self.session_id,
+            topic=self.topic_name,
+            description=self.description,
+            date=datetime.now().isoformat(),
+            total_rounds_configured=self.total_rounds,
+            total_turns_configured=self.total_turns,
+            allowed_positions=self.allowed_positions,
+            total_estimated_cost_usd=final_total_cost,
+        )
+
+        final_result = DebateResult(
+            metadata=meta,
+            participants=p_entries,
+            moderator=(
+                self.moderator.model_dump(mode="json") if self.moderator else None
+            ),
+            moderator_stats=ModeratorStats(**self.moderator_stats),
+            position_changes=self.position_changes_log,
+            transcript=transcript_entries,
+            evaluation=self.evaluation_data,
+        )
+
+        with open(full_path, "w", encoding="utf-8") as f:
+            f.write(final_result.model_dump_json(indent=4, by_alias=True))
+
+        return full_path
+```
+
+./debates/enums/__init__.py:
+```
+from .brain_type import BrainType
+from .attitude_type import AttitudeType
+from .ethnicity_type import EthnicityType
+from .role_type import RoleType
+from .gender_type import GenderType
+from .moderator_action import ModeratorAction
+from .mindset_type import MindsetType
+```
+
+./debates/enums/moderator_action.py:
+```
+from enum import Enum
+
+
+class ModeratorAction(str, Enum):
+    NONE = "NONE"
+    INTERVENE = "INTERVENE"
+    SKIP = "SKIP"
+    VETO = "VETO"
+    STOP = "STOP"
+    SANCTION = "SANCTION"
+    LIMIT = "LIMIT"
+```
+
+./debates/enums/ethnicity_type.py:
+```
+from enum import Enum
+
+
+class EthnicityType(str, Enum):
+    WHITE = "white"
+    BLACK = "black"
+    ASIAN = "asian"
+    INDIAN = "indian"
+    LATINO = "latino"
+    INDIGENOUS = "indigenous"
+    MIXED = "mixed"
+    OTHER = "other"
+```
+
+./debates/enums/brain_type.py:
+```
+from enum import Enum
+
+
+class BrainType(str, Enum):
+    GEMINI = "gemini"
+    OPENAI = "openai"
+    DEEPSEEK = "deepseek"
+    CLAUDE = "claude"
+```
+
+./debates/enums/mindset_type.py:
+```
+from enum import Enum
+
+
+class MindsetType(str, Enum):
+    OPEN_MINDED = "open_minded"
+    NEUTRAL = "neutral"
+    CLOSE_MINDED = "close_minded"
+```
+
+./debates/enums/role_type.py:
+```
+from enum import Enum
+
+
+class RoleType(str, Enum):
+    EXPERT = "expert"
+    SCHOLAR = "scholar"
+    GENERAL_KNOWLEDGE = "general_knowledge"
+    ILLITERATE = "illiterate"
+```
+
+./debates/enums/gender_type.py:
+```
+from enum import Enum
+
+
+class GenderType(str, Enum):
+    MALE = "male"
+    FEMALE = "female"
+    NON_BINARY = "non_binary"
+```
+
+./debates/enums/attitude_type.py:
+```
+from enum import Enum
+
+
+class AttitudeType(str, Enum):
+    CALM = "calm"
+    STRICT = "strict"
+    FAIR = "fair"
+    AGGRESSIVE = "aggressive"
+    PASSIVE = "passive"
+    SARCASTIC = "sarcastic"
+```

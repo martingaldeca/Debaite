@@ -1,0 +1,23 @@
+[project]
+name = "debaite"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.11"
+dependencies = [
+    "faker>=40.4.0",
+    "ipython>=9.10.0",
+    "pydantic>=2.12.5",
+    "openai>=1.0.0",
+    "anthropic>=0.3.0",
+    "google-generativeai>=0.3.0",
+    "python-dotenv>=1.2.1",
+    "litellm>=1.0.0",
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "sse-starlette>=2.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
