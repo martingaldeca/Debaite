@@ -1,0 +1,5 @@
+.env
+*.txt
+*.log
+debate_logs/*
+debate_results/*

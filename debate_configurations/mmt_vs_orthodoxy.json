@@ -1,0 +1,8 @@
+{
+  "topic_name": "Modern Monetary Theory (MMT) vs. Fiscal Orthodoxy",
+  "description": "This debate addresses the nature of money, public debt, and the limits of government spending.\n\nThe **MMT Position** argues that a state issuing its own sovereign currency faces no operational financial constraints (it cannot go bankrupt in its own currency). They contend that taxes do not fund public spending but serve to control inflation and create demand for the currency. For them, fiscal deficits are a necessary tool to achieve full employment, and the only real limit is the availability of physical resources, not money.\n\nThe **Orthodox Position** maintains that the government must exercise financial prudence similar to a household or business. They argue that deficit spending financed by money printing inevitably leads to destructive inflation and currency debasement. They warn that excessive debt crowds out private investment, raises interest rates, and shifts an unfair burden onto future generations, advocating for balanced budgets and austerity.",
+  "allowed_positions": [
+    "MMT Advocate",
+    "Orthodox Economist"
+  ]
+}
