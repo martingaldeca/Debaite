@@ -4,20 +4,18 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.11"
 dependencies = [
-    "faker>=40.4.0",
-    "ipython>=9.10.0",
-    "pydantic>=2.12.5",
-    "openai>=1.0.0",
-    "anthropic>=0.3.0",
-    "google-generativeai>=0.3.0",
-    "python-dotenv>=1.2.1",
-    "litellm>=1.0.0",
-    "fastapi>=0.109.0",
-    "uvicorn>=0.27.0",
-    "sse-starlette>=2.0.0",
+    "anthropic==0.79.0",
+    "faker==40.4.0",
+    "fastapi==0.128.8",
+    "google-generativeai==0.8.6",
+    "ipython==9.10.0",
+    "litellm==1.81.9",
+    "openai==2.17.0",
+    "pydantic==2.12.5",
+    "python-dotenv==1.2.1",
+    "sse-starlette==3.2.0",
+    "uvicorn==0.40.0",
 ]
 
 [dependency-groups]
-dev = [
-    "pytest>=9.0.2",
-]
+dev = []
